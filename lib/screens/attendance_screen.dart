@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'dart:async';
@@ -6,10 +8,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 
 import 'package:mobilperosnel/services/fake_location_service.dart';
+import 'package:mobilperosnel/services/location_security_service.dart';
 import 'package:mobilperosnel/services/notification_service.dart';
 import 'package:mobilperosnel/layers/AttendanceLayer.dart';
 import 'package:mobilperosnel/utils/constants.dart';
-
 class AttendanceScreen extends StatefulWidget {
   @override
   _AttendanceScreenState createState() => _AttendanceScreenState();
@@ -23,7 +25,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   int? userId;
   String? userName;
 
-  bool isFakeLocation = false;
+  bool isFakeLocation = false; // BU BAYRAK HEM ANDROID HEM IOS İÇİN TEK MERKEZ OLACAK
   bool isNearCheckIn = false;
   bool isNearCheckOut = false;
 
@@ -33,6 +35,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   Position? currentPosition;
   Timer? _timer;
 
+   StreamSubscription<Position>? _positionStreamSubscription; 
+
   final double nearDistance = 1000;
   final double arriveDistance = 50;
 
@@ -41,7 +45,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   String? lastCheckInTime;
   String? lastCheckOutTime;
 
-  /// Mesai (vardiya) varsa => akşam saat kısıtı kalkacak
   bool hasShift = false;
 
   @override
@@ -51,108 +54,99 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     _initData();
     _startClock();
     _startLocationUpdates();
-    // Saatleri ve mesai durumunu fetch
     Future.delayed(Duration.zero, () async {
       await _fetchHours();
-      await checkShiftStatus(); // Mesai durumu
+      await checkShiftStatus();
     });
   }
 
-  // ------------------- Mesai kontrolü --------------
-  Future<void> checkShiftStatus() async {
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('auth_token');
-    if (token == null || userId == null) {
-      await NotificationService().showNotificationCustom(
-        'Mesai Durumu',
-        'Token veya UserID eksik.',
-      );
-      return;
+    @override
+  void dispose() {
+    print("AttendanceScreen yok ediliyor. Tüm zamanlayıcılar ve dinleyiciler durduruluyor.");
+    _timer?.cancel();
+    _positionStreamSubscription?.cancel();
+    super.dispose();
+  }
+
+  /// Cihaz platformuna göre doğru güvenlik kontrolünü yapar ve konumun şüpheli olup olmadığını döndürür.
+  /// `true` -> Şüpheli, `false` -> Güvenilir
+  Future<bool> _isLocationSuspicious(Position position) async {
+    if (Platform.isAndroid) {
+      // Android için mevcut mock location kontrolünü kullan
+      return await FakeLocationService().isFakeLocation(position);
+    } else if (Platform.isIOS) {
+      // iOS için Jailbreak ve ışınlanma kontrolünü kullan.
+      // LocationSecurityService.isLocationTrustworthy() `false` dönerse şüpheli demektir.
+      bool isTrustworthy = await LocationSecurityService.isLocationTrustworthy(position);
+      return !isTrustworthy; // Sonucu tersine çevirerek `isSuspicious`'a uygun hale getiriyoruz.
+    }
+    // Diğer platformlar için şimdilik güvenli kabul et
+    return false;
+  }
+  
+  // --- KONUM GÜNCELLEME FONKSİYONU YENİDEN YAZILDI ---
+    void _startLocationUpdates() async {
+    LocationPermission perm = await Geolocator.checkPermission();
+    if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) {
+      final asked = await Geolocator.requestPermission();
+      if (asked == LocationPermission.denied || asked == LocationPermission.deniedForever) {
+        await NotificationService().showNotificationCustom(
+          'Konum Hatası',
+          'Konum izni verilmedi, konum alınamadı.',
+        );
+        return;
+      }
     }
 
-    try {
-      final url = Uri.parse('${Constants.baseUrl}/has-shift-check');
-      final response = await http.post(
-        url,
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Accept': 'application/json'
-        },
-        body: {
-          'user_id': userId.toString()
-        },
-      );
-      if (response.statusCode == 200) {
-        final js = jsonDecode(response.body);
-        bool shift = js['has_shift'] == true;
-        if (shift) {
+    Geolocator.getPositionStream(
+      locationSettings: LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 10),
+    ).listen((pos) async {
+      currentPosition = pos;
+      
+      // Tek merkezden güvenlik kontrolü yapılıyor
+      bool isSuspicious = await _isLocationSuspicious(pos);
+
+      if (isSuspicious) {
+        // --- GÜNCELLEME BURADA ---
+        // Sadece bir kere raporlamak ve UI'ı kilitlemek için, 
+        // zaten kilitlenmişse tekrar işlem yapma.
+        if (mounted && !isFakeLocation) { 
+          // 1. API'ye Raporla: Raporlama fonksiyonunu burada çağırıyoruz.
+          await _reportFakeLocationToApi(pos);
+
+          // 2. Arayüzü Kilitle: API'ye raporladıktan sonra UI'ı güncelle.
+          setState(() {
+            isFakeLocation = true; // Bu bayrak tüm UI'ı kilitler
+            locationStatus = '🚨 Sahte Konum Tespit Edildi 🚨';
+            locationColor = Colors.red;
+          });
+          
+          // 3. Kullanıcıyı Bilgilendir
           await NotificationService().showNotificationCustom(
-            'Mesai Durumu',
-            'Mesainiz var, çıkış saat kısıtı kalktı.',
-          );
-        } else {
-          await NotificationService().showNotificationCustom(
-            'Mesai Durumu',
-            'Mesai bulunmuyor.',
+            'Güvenlik Uyarısı',
+            'Şüpheli konum aktivitesi nedeniyle işlemler devre dışı bırakıldı.',
           );
         }
-        setState(() {
-          hasShift = shift;
-        });
+        // --- GÜNCELLEME SONU ---
       } else {
-        String errMsg =
-            "checkShiftStatus => code=${response.statusCode}, body=${response.body}";
-        print(errMsg);
-        await NotificationService().showNotificationCustom(
-          'Mesai Durumu Hatası',
-          errMsg,
-        );
+        // KONUM GÜVENİLİR İSE: Normal işlemlere devam et
+        if (mounted) {
+          // Eğer bir şekilde önceden kilitlenmişse kilidi kaldır
+          if(isFakeLocation) {
+             setState(() { isFakeLocation = false; });
+          }
+          await _fetchTodayAttendance();
+          _updateLocationStatus();
+        }
       }
-    } catch (e) {
-      String errMsg = "checkShiftStatus => error=$e";
-      print(errMsg);
-      await NotificationService().showNotificationCustom(
-        'Mesai Durumu Hatası',
-        errMsg,
-      );
-    }
+    });
   }
-
-  Future<void> _resetFlagsIfNewDay() async {
-    final now = DateTime.now();
-    final todayStr = "${now.year}-${now.month}-${now.day}";
-
-    final prefs = await SharedPreferences.getInstance();
-    final lastOpen = prefs.getString('last_open_date');
-
-    if (lastOpen != todayStr) {
-      // Yeni gün => reset
-      await prefs.setString('last_open_date', todayStr);
-      await prefs.setBool('didCheckIn', false);
-      await prefs.setBool('didCheckOut', false);
-      await prefs.setBool('didShow16_55', false);
-      await prefs.setBool('didShow17_20', false);
-      await prefs.setBool('didShow20', false);
-
-      setState(() {
-        doneCheckIn = false;
-        doneCheckOut = false;
-        lastCheckInTime = null;
-        lastCheckOutTime = null;
-      });
-      await NotificationService().showNotificationCustom(
-        'Gün Reset',
-        'Yeni gün tespit edildi, flaglar sıfırlandı.',
-      );
-    }
-  }
-
-  Future<void> _checkInAppNotifications() async {
-    // Saatlik bildirim işlemleri varsa burada yapılabilir.
-  }
+  
+  // --- Diğer Fonksiyonlar (Değişiklik Gerekmiyor) ---
 
   Future<void> _initData() async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
+    // ... Bu fonksiyonun içeriği aynı kalacak ...
+        SharedPreferences prefs = await SharedPreferences.getInstance();
     String? token = prefs.getString('auth_token');
     if (token == null) {
       await NotificationService().showNotificationCustom(
@@ -200,7 +194,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   }
 
   Future<void> _fetchTodayAttendance() async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
+    // ... Bu fonksiyonun içeriği aynı kalacak ...
+        SharedPreferences prefs = await SharedPreferences.getInstance();
     String? token = prefs.getString('auth_token');
     if (token == null || userId == null) {
       await NotificationService().showNotificationCustom(
@@ -229,10 +224,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             lastCheckInTime = null;
             lastCheckOutTime = null;
           });
-          await NotificationService().showNotificationCustom(
-            'Attendance',
-            'Bugün için kayıt bulunamadı.',
-          );
+        
         } else {
           final cIn = att['check_in_time'];
           final cOut = att['check_out_time'];
@@ -242,84 +234,39 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             doneCheckIn = (cIn != null);
             doneCheckOut = (cOut != null);
           });
-          await NotificationService().showNotificationCustom(
-            'Attendance',
-            'Bugünkü giriş ve çıkış bilgileri alındı.',
-          );
+          
         }
       } else {
         String errMsg = "today endpoint error: ${r.body}";
         print(errMsg);
-        await NotificationService().showNotificationCustom(
-          'Attendance Hatası',
-          errMsg,
-        );
+       
       }
     } catch (e) {
       String errMsg = "fetchTodayAttendance error => $e";
       print(errMsg);
-      await NotificationService().showNotificationCustom(
-        'Attendance Hatası',
-        errMsg,
-      );
+    
     }
 
     await _checkInAppNotifications();
   }
 
-  void _startClock() {
-    _timer = Timer.periodic(Duration(seconds: 1), (timer) {
-      final now = DateTime.now();
-      final h = now.hour.toString().padLeft(2, '0');
-      final m = now.minute.toString().padLeft(2, '0');
-      final s = now.second.toString().padLeft(2, '0');
-      setState(() {
-        _timeString = '$h:$m:$s';
-      });
-    });
-  }
-
-  void _startLocationUpdates() async {
-    LocationPermission perm = await Geolocator.checkPermission();
-    if (perm == LocationPermission.denied ||
-        perm == LocationPermission.deniedForever) {
-      final asked = await Geolocator.requestPermission();
-      if (asked == LocationPermission.denied ||
-          asked == LocationPermission.deniedForever) {
-        await NotificationService().showNotificationCustom(
-          'Konum Hatası',
-          'Konum izni verilmedi, konum alınamadı.',
-        );
-        return;
-      }
-    }
-
-    Geolocator.getPositionStream(
-      locationSettings: LocationSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 10,
-      ),
-    ).listen((pos) async {
-      currentPosition = pos;
-      bool fake = await FakeLocationService().isFakeLocation(pos);
-      setState(() {
-        isFakeLocation = fake;
-      });
-      if (fake) {
-        locationStatus = 'Sahte Konum Tespit Edildi';
-        locationColor = Colors.red;
-        await NotificationService().showNotificationCustom(
-          'Uyarı',
-          'Şüpheli konum, işlemler devre dışı.',
-        );
-      } else {
-        await _fetchTodayAttendance();
-        _updateLocationStatus();
+    void _startClock() {
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      // ÖNCE KONTROL ET, SONRA GÜNCELLE
+      if (mounted) {
+        final now = DateTime.now();
+        final h = now.hour.toString().padLeft(2, '0');
+        final m = now.minute.toString().padLeft(2, '0');
+        final s = now.second.toString().padLeft(2, '0');
+        setState(() {
+          _timeString = '$h:$m:$s';
+        });
       }
     });
   }
 
   void _updateLocationStatus() {
+    // ... Bu fonksiyonun içeriği aynı kalacak ...
     if (currentPosition == null || isFakeLocation) return;
     if (checkInLocation == null || checkOutLocation == null) {
       locationStatus = 'Lokasyon tanımlı değil';
@@ -383,15 +330,105 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
     setState(() {});
     _checkInAppNotifications();
-    // Örnek: Lokasyon güncellendiğini bildiren bildirim
-    NotificationService().showNotificationCustom(
-      'Konum Güncellemesi',
-      'Durum: $locationStatus',
-    );
   }
 
-  Future<void> _fetchHours() async {
+  Future<void> checkShiftStatus() async {
+    // ... Bu fonksiyonun içeriği aynı kalacak ...
     final prefs = await SharedPreferences.getInstance();
+    final token = prefs.getString('auth_token');
+    if (token == null || userId == null) {
+      await NotificationService().showNotificationCustom(
+        'Mesai Durumu',
+        'Token veya UserID eksik.',
+      );
+      return;
+    }
+
+    try {
+      final url = Uri.parse('${Constants.baseUrl}/has-shift-check');
+      final response = await http.post(
+        url,
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Accept': 'application/json'
+        },
+        body: {
+          'user_id': userId.toString()
+        },
+      );
+      if (response.statusCode == 200) {
+        final js = jsonDecode(response.body);
+        bool shift = js['has_shift'] == true;
+        if (shift) {
+          await NotificationService().showNotificationCustom(
+            'Mesai Durumu',
+            'Mesainiz var, çıkış saat kısıtı kalktı.',
+          );
+        } else {
+          await NotificationService().showNotificationCustom(
+            'Mesai Durumu',
+            'Mesai bulunmuyor.',
+          );
+        }
+        setState(() {
+          hasShift = shift;
+        });
+      } else {
+        String errMsg =
+            "checkShiftStatus => code=${response.statusCode}, body=${response.body}";
+        print(errMsg);
+        await NotificationService().showNotificationCustom(
+          'Mesai Durumu Hatası',
+          errMsg,
+        );
+      }
+    } catch (e) {
+      String errMsg = "checkShiftStatus => error=$e";
+      print(errMsg);
+      await NotificationService().showNotificationCustom(
+        'Mesai Durumu Hatası',
+        errMsg,
+      );
+    }
+  }
+
+  Future<void> _resetFlagsIfNewDay() async {
+    // ... Bu fonksiyonun içeriği aynı kalacak ...
+        final now = DateTime.now();
+    final todayStr = "${now.year}-${now.month}-${now.day}";
+
+    final prefs = await SharedPreferences.getInstance();
+    final lastOpen = prefs.getString('last_open_date');
+
+    if (lastOpen != todayStr) {
+      // Yeni gün => reset
+      await prefs.setString('last_open_date', todayStr);
+      await prefs.setBool('didCheckIn', false);
+      await prefs.setBool('didCheckOut', false);
+      await prefs.setBool('didShow16_55', false);
+      await prefs.setBool('didShow17_20', false);
+      await prefs.setBool('didShow20', false);
+
+      setState(() {
+        doneCheckIn = false;
+        doneCheckOut = false;
+        lastCheckInTime = null;
+        lastCheckOutTime = null;
+      });
+      await NotificationService().showNotificationCustom(
+        'Gün Reset',
+        'Yeni gün tespit edildi, flaglar sıfırlandı.',
+      );
+    }
+  }
+  
+  Future<void> _checkInAppNotifications() async {
+    // ... Bu fonksiyonun içeriği aynı kalacak ...
+  }
+  
+  Future<void> _fetchHours() async {
+    // ... Bu fonksiyonun içeriği aynı kalacak ...
+        final prefs = await SharedPreferences.getInstance();
     final token = prefs.getString('auth_token');
     if (token == null) return;
 
@@ -416,10 +453,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           await prefs.setString('morning_end_time', morningEnd);
           await prefs.setString('evening_start_time', eveningStart);
           await prefs.setString('evening_end_time', eveningEnd);
-          await NotificationService().showNotificationCustom(
-            'Saat Bilgisi',
-            'Giriş: $morningStart - $morningEnd, Çıkış: $eveningStart - $eveningEnd',
-          );
         } else {
           await prefs.setString('morning_start_time', "07:00:00");
           await prefs.setString('morning_end_time', "12:00:00");
@@ -439,15 +472,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       await prefs.setString('morning_end_time', "12:00:00");
       await prefs.setString('evening_start_time', "12:00:00");
       await prefs.setString('evening_end_time', "17:50:00");
-      NotificationService().showNotificationCustom(
-        'Saat Bilgisi Hatası',
-        'Hata: $e',
-      );
     }
   }
 
   Future<String> checkInAction() async {
-    if (isFakeLocation) {
+    // ... Bu fonksiyonun içeriği aynı kalacak (isFakeLocation kontrolü zaten var) ...
+        if (isFakeLocation) {
       await NotificationService().showNotificationCustom(
         'Giriş Başarısız',
         'Sahte konum => giriş yok.',
@@ -539,8 +569,58 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
+    /// Sahte konum tespit edildiğinde sunucuya log gönderir.
+  Future<void> _reportFakeLocationToApi(Position fakePosition) async {
+    print("🚨 API'ye sahte konum raporlanıyor...");
+    
+    // 1. Gerekli Bilgileri SharedPreferences'tan Oku
+    final prefs = await SharedPreferences.getInstance();
+    final token = prefs.getString('auth_token');
+    // user_id'yi state'ten alıyoruz, initState'te zaten set ediliyor.
+    // Eğer null ise, bir sorun var demektir.
+    if (token == null || userId == null) {
+      print("Token veya UserID bulunamadığı için sahte konum raporlanamadı.");
+      return;
+    }
+
+    // Cihaz bilgisini de alalım (API'nız bunu istiyor)
+    final deviceInfo = prefs.getString('device_info');
+    
+    // 2. API Endpoint'ini ve Veri Modelini Hazırla
+    final url = Uri.parse('${Constants.baseUrl}/fake-location/report');
+    final body = jsonEncode({
+      'user_id': userId,
+      'user_name': userName, // userName initState'te alınıyor
+      'device_info': deviceInfo,
+      'fake_lat': fakePosition.latitude,
+      'fake_lng': fakePosition.longitude,
+    });
+
+    // 3. API İsteğini Gönder
+    try {
+      final response = await http.post(
+        url,
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: body,
+      );
+
+      if (response.statusCode == 201) {
+        print("✅ Sahte konum başarıyla sunucuya raporlandı.");
+      } else {
+        print("❌ Sahte konum raporlanırken hata oluştu. Status: ${response.statusCode}, Body: ${response.body}");
+      }
+    } catch (e) {
+      print("❌ Sahte konum API'sine istek atılırken kritik bir hata oluştu: $e");
+    }
+  }
+
   Future<String> checkOutAction() async {
-    if (isFakeLocation) {
+    // ... Bu fonksiyonun içeriği aynı kalacak (isFakeLocation kontrolü zaten var) ...
+        if (isFakeLocation) {
       await NotificationService().showNotificationCustom(
         'Çıkış Başarısız',
         'Sahte konum => çıkış yok.',
@@ -583,10 +663,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       }
     } else {
       print("Mesai var => saat kısıtı yok => direk devam.");
-      await NotificationService().showNotificationCustom(
-        'Mesai Durumu',
-        "Mesai var => saat kısıtı yok => direk devam.",
-      );
     }
 
     SharedPreferences sp = await SharedPreferences.getInstance();
@@ -641,14 +717,16 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   }
 
   int _timeToMinutes(String hhmmss) {
-    final parts = hhmmss.split(':');
+    // ... Bu fonksiyonun içeriği aynı kalacak ...
+        final parts = hhmmss.split(':');
     final h = int.parse(parts[0]);
     final m = int.parse(parts[1]);
     return h * 60 + m;
   }
-
+  
   @override
   Widget build(BuildContext context) {
+    // ... Build metodunun içeriği aynı kalacak. UI, `isFakeLocation` bayrağına göre kendini zaten ayarlıyor.
     final displayCheckIn = (lastCheckInTime == null)
         ? 'Henüz giriş yapılmadı'
         : 'Giriş Saati: $lastCheckInTime';
@@ -804,7 +882,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                             ),
                           )
                               : Text(
-                            '${currentPosition!.latitude.toStringAsFixed(5)}, ${currentPosition!.longitude.toStringAsFixed(5)}',
+                            isFakeLocation // Sahte konum ise koordinatları gösterme
+                              ? '---'
+                              : '${currentPosition!.latitude.toStringAsFixed(5)}, ${currentPosition!.longitude.toStringAsFixed(5)}',
                             textAlign: TextAlign.center,
                             style: TextStyle(
                               fontSize: 14,
@@ -816,7 +896,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                         ),
                       ),
                       SizedBox(width: 8),
-                      // (Buraya ek bir buton eklenebilir)
                     ],
                   ),
                 ),

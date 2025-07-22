@@ -1,4 +1,9 @@
 PODS:
+  - background_fetch (1.3.8):
+    - Flutter
+  - CocoaLumberjack (3.8.5):
+    - CocoaLumberjack/Core (= 3.8.5)
+  - CocoaLumberjack/Core (3.8.5)
   - connectivity_plus (0.0.1):
     - Flutter
   - detect_fake_location (0.0.1):
@@ -6,6 +11,12 @@ PODS:
   - device_info_plus (0.0.1):
     - Flutter
   - Flutter (1.0.0)
+  - flutter_background_geolocation (4.16.12):
+    - CocoaLumberjack (~> 3.8.5)
+    - Flutter
+  - flutter_jailbreak_detection (1.0.0):
+    - Flutter
+    - IOSSecuritySuite
   - flutter_keyboard_visibility (0.0.1):
     - Flutter
   - flutter_local_notifications (0.0.1):
@@ -14,9 +25,12 @@ PODS:
     - Flutter
   - geolocator_apple (1.2.0):
     - Flutter
+  - IOSSecuritySuite (2.2.0)
   - location (0.0.1):
     - Flutter
   - permission_handler_apple (9.3.0):
+    - Flutter
+  - sensors_plus (0.0.1):
     - Flutter
   - shared_preferences_foundation (0.0.1):
     - Flutter
@@ -25,20 +39,31 @@ PODS:
     - Flutter
 
 DEPENDENCIES:
+  - background_fetch (from `.symlinks/plugins/background_fetch/ios`)
   - connectivity_plus (from `.symlinks/plugins/connectivity_plus/ios`)
   - detect_fake_location (from `.symlinks/plugins/detect_fake_location/ios`)
   - device_info_plus (from `.symlinks/plugins/device_info_plus/ios`)
   - Flutter (from `Flutter`)
+  - flutter_background_geolocation (from `.symlinks/plugins/flutter_background_geolocation/ios`)
+  - flutter_jailbreak_detection (from `.symlinks/plugins/flutter_jailbreak_detection/ios`)
   - flutter_keyboard_visibility (from `.symlinks/plugins/flutter_keyboard_visibility/ios`)
   - flutter_local_notifications (from `.symlinks/plugins/flutter_local_notifications/ios`)
   - geocoding_ios (from `.symlinks/plugins/geocoding_ios/ios`)
   - geolocator_apple (from `.symlinks/plugins/geolocator_apple/ios`)
   - location (from `.symlinks/plugins/location/ios`)
   - permission_handler_apple (from `.symlinks/plugins/permission_handler_apple/ios`)
+  - sensors_plus (from `.symlinks/plugins/sensors_plus/ios`)
   - shared_preferences_foundation (from `.symlinks/plugins/shared_preferences_foundation/darwin`)
   - url_launcher_ios (from `.symlinks/plugins/url_launcher_ios/ios`)
 
+SPEC REPOS:
+  trunk:
+    - CocoaLumberjack
+    - IOSSecuritySuite
+
 EXTERNAL SOURCES:
+  background_fetch:
+    :path: ".symlinks/plugins/background_fetch/ios"
   connectivity_plus:
     :path: ".symlinks/plugins/connectivity_plus/ios"
   detect_fake_location:
@@ -47,6 +72,10 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/device_info_plus/ios"
   Flutter:
     :path: Flutter
+  flutter_background_geolocation:
+    :path: ".symlinks/plugins/flutter_background_geolocation/ios"
+  flutter_jailbreak_detection:
+    :path: ".symlinks/plugins/flutter_jailbreak_detection/ios"
   flutter_keyboard_visibility:
     :path: ".symlinks/plugins/flutter_keyboard_visibility/ios"
   flutter_local_notifications:
@@ -59,25 +88,33 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/location/ios"
   permission_handler_apple:
     :path: ".symlinks/plugins/permission_handler_apple/ios"
+  sensors_plus:
+    :path: ".symlinks/plugins/sensors_plus/ios"
   shared_preferences_foundation:
     :path: ".symlinks/plugins/shared_preferences_foundation/darwin"
   url_launcher_ios:
     :path: ".symlinks/plugins/url_launcher_ios/ios"
 
 SPEC CHECKSUMS:
+  background_fetch: 851122c99dc3f25a011a6aebec5379ccdf4ab5eb
+  CocoaLumberjack: 6a459bc897d6d80bd1b8c78482ec7ad05dffc3f0
   connectivity_plus: cb623214f4e1f6ef8fe7403d580fdad517d2f7dd
   detect_fake_location: dd843da9d3654bf7332aeab411539557dde2fd56
   device_info_plus: 21fcca2080fbcd348be798aa36c3e5ed849eefbe
   Flutter: e0871f40cf51350855a761d2e70bf5af5b9b5de7
+  flutter_background_geolocation: 0c4de54c968665b035929d3ab1a43e444def53e6
+  flutter_jailbreak_detection: a74360daaf5cbc80639959463b4b1395873c90b5
   flutter_keyboard_visibility: 4625131e43015dbbe759d9b20daaf77e0e3f6619
   flutter_local_notifications: 395056b3175ba4f08480a7c5de30cd36d69827e4
   geocoding_ios: bcbdaa6bddd7d3129c9bcb8acddc5d8778689768
   geolocator_apple: 1560c3c875af2a412242c7a923e15d0d401966ff
+  IOSSecuritySuite: ba76f34cb367b9230934ac37904e26a40d033e3d
   location: 155caecf9da4f280ab5fe4a55f94ceccfab838f8
   permission_handler_apple: 4ed2196e43d0651e8ff7ca3483a069d469701f2d
+  sensors_plus: 6a11ed0c2e1d0bd0b20b4029d3bad27d96e0c65b
   shared_preferences_foundation: 9e1978ff2562383bd5676f64ec4e9aa8fa06a6f7
   url_launcher_ios: 694010445543906933d732453a59da0a173ae33d
 
-PODFILE CHECKSUM: dabc5869b5dda3745f9a6ae3881c36700ef2d89a
+PODFILE CHECKSUM: 389c58d21f992f804ab2454ff9d1f772a9956200
 
 COCOAPODS: 1.16.2

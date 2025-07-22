@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<gpx version="1.1" creator="Xcode">
+    <wpt lat="41.015137" lon="28.979530">
+        <name>Istanbul</name>
+        <time>2025-01-01T10:00:00Z</time>
+    </wpt>
+    <wpt lat="39.925533" lon="32.866287">
+        <name>Ankara</name>
+        <time>2025-01-01T10:00:01Z</time>
+    </wpt>
+</gpx>

@@ -3,29 +3,70 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
+import 'package:permission_handler/permission_handler.dart' as perm_handler;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'package:flutter/services.dart';
 import 'package:mobilperosnel/utils/constants.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:permission_handler/permission_handler.dart' hide ServiceStatus;
 import 'package:mobilperosnel/noti_service.dart'; // NotiService import edildi
 import 'package:mobilperosnel/screens/location_service.dart';
+
+import 'package:flutter_background_geolocation/flutter_background_geolocation.dart' as bg;
 
 class SplashScreen extends StatefulWidget {
   @override
   _SplashScreenState createState() => _SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen> {
+class _SplashScreenState extends State<SplashScreen> with WidgetsBindingObserver {
+
+  bool _isResumingFromSettings = false;
+  StreamSubscription? _locationPermissionSubscription;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this); // Yaşam döngüsü dinleyicisini başlat
+    _listenForPermissionChanges(); // İzin dinleyicisini başlat
+
     print('🔄 Splash Screen başlatıldı');
     // Bildirim sistemi başlatılmıyor burada, çünkü senin NotiService init fonksiyonu yoksa gerek yok.
     // Eğer varsa, NotificationService().initNotifications() benzeri çağrı buraya eklenebilir.
-
     _initializeApp();
   }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this); // Sayfa kapandığında dinleyiciyi kaldır
+    _locationPermissionSubscription?.cancel(); // Sayfa kapandığında dinleyiciyi sonlandır
+
+    super.dispose();
+  }
+
+ /* @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed && _isResumingFromSettings) {
+      print("Ayarlardan geri dönüldü, kontroller yeniden başlatılıyor.");
+      _isResumingFromSettings = false;
+      _initializeApp(); // Tüm kontrol akışını yeniden başlat
+    }
+  }*/
+
+    /// Geolocator'ın konum izni durumu değişikliklerini dinler.
+  void _listenForPermissionChanges() {
+    // Mevcut bir dinleyici varsa, önce onu iptal et.
+    _locationPermissionSubscription?.cancel();
+
+    _locationPermissionSubscription = Geolocator.getServiceStatusStream().listen((ServiceStatus status) {
+      print("🔄 Konum servis durumu değişti: $status");
+      // Konum servisi açıldığında veya bir değişiklik olduğunda,
+      // tüm kontrol akışını yeniden başlatmak en güvenli yoldur.
+      _initializeApp();
+    });
+  }
+  
 
   Future<void> _initializeApp() async {
     print('📍 Konum izinleri kontrol ediliyor...');
@@ -217,7 +258,8 @@ class _SplashScreenState extends State<SplashScreen> {
             body: "HTTP Hatası: ${response.statusCode}");
         _clearCredentialsAndNavigate();
       }
-    } on TimeoutException {
+
+    }on TimeoutException {
       print('⌛ [DEVICE VERIFY] Zaman aşımı');
       NotiService().showNotification(
           title: "Zaman Aşımı", body: "[DEVICE VERIFY] Zaman aşımı");
@@ -232,46 +274,92 @@ class _SplashScreenState extends State<SplashScreen> {
       NotiService().showNotification(
           title: "Cihaz Doğrulama Hatası", body: "${e.toString()}");
       _clearCredentialsAndNavigate();
-    }
+    } 
   }
+     // splash_screen.dart içindeki eski _handleLocationPermissions fonksiyonunu silip bunu yapıştır.
 
   Future<bool> _handleLocationPermissions() async {
+    // 1. Konum servisleri (GPS) açık mı?
     print('📍 Konum servisleri kontrol ediliyor...');
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
-      print('❌ Konum servisleri kapalı');
-      NotiService().showNotification(
-          title: "Konum Hatası", body: "Konum servisleri kapalı!");
-      await _showLocationDialog('Konum servisleri kapalı!');
-      return false;
+      print('❌ Konum servisleri kapalı.');
+     await _showLocationDialog(
+        'Uygulamanın çalışması için lütfen cihazınızın konum servislerini (GPS) açın.',
+        isGpsError: true,
+      );
+      // Kullanıcıyı ayarlara yönlendirerek daha iyi bir deneyim sunabiliriz.
+     // await Geolocator.openLocationSettings();
+      return false; // Servis kapalıysa devam etme
     }
 
-    print('🔑 Konum izin durumu kontrol ediliyor...');
+    // 2. Mevcut izin durumunu kontrol et
     LocationPermission permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.deniedForever) {
-      print('❌ Kalıcı izin reddedilmiş');
-      NotiService().showNotification(
-          title: "Konum Hatası", body: "Kalıcı izin reddedildi");
-      await _showLocationDialog('Konum izni sürekli reddedildi!');
-      return false;
-    }
+    print('🔑 Mevcut konum izni: $permission');
 
-    if (permission == LocationPermission.denied) {
-      print('🔐 Konum izni isteniyor...');
-      NotiService().showNotification(
-          title: "Konum İzni", body: "Konum izni isteniyor...");
+    if (Platform.isIOS && permission != LocationPermission.always) {
       permission = await Geolocator.requestPermission();
-      if (permission != LocationPermission.whileInUse &&
-          permission != LocationPermission.always) {
-        print('❌ Konum izni reddedildi');
-        NotiService().showNotification(
-            title: "Konum İzni", body: "Konum izni reddedildi");
+      LocationPermission finalPermission = await Geolocator.checkPermission();
+      if (finalPermission != LocationPermission.always) {
+        await _showLocationDialog(
+          'Uygulamanın arka planda düzgün çalışabilmesi için konum iznini "Ayarlar"dan "Her Zaman" olarak değiştirmeniz gerekmektedir.',
+          showSettingsButton: true,
+        );
         return false;
       }
+    } 
+
+    // 3. Arka plan takibi için 'always' izni gerekli mi? Kontrol et.
+    // iOS'ta arka plan görevi için bu şarttır.
+    if (Platform.isIOS) {
+      if (permission != LocationPermission.always) {
+        print("🔐 iOS için 'Her Zaman' izni gerekli. İzin isteniyor...");
+        
+        // Önce 'whileInUse' izni istenir (iOS'un zorunlu adımı)
+        permission = await Geolocator.requestPermission();
+        
+        // 'whileInUse' iznini aldıktan sonra, sistem 'always' için tekrar sorabilir.
+        // Bu yüzden son durumu tekrar kontrol ediyoruz.
+        if (permission == LocationPermission.whileInUse || permission == LocationPermission.always) {
+          LocationPermission finalPermission = await Geolocator.checkPermission();
+          if (finalPermission != LocationPermission.always) {
+             print("❌ 'Her Zaman' izni alınamadı. Kullanıcı ayarlara yönlendiriliyor.");
+             await _showLocationDialog('Uygulamanın arka planda düzgün çalışabilmesi için konum iznini "Ayarlar"dan "Her Zaman" olarak değiştirmeniz gerekmektedir.');
+             await Geolocator.openAppSettings();
+             return false;
+          }
+        } else {
+          // Kullanıcı 'whileInUse' iznini bile vermediyse
+          await _showLocationDialog('Konum izni uygulamanın düzgün çalışması için gereklidir.');
+          return false;
+        }
+      }
+    } else if (Platform.isAndroid) {
+        // Android için arka plan iznini de kontrol et
+        var backgroundPermissionStatus = await perm_handler.Permission.locationAlways.status;
+        if (!backgroundPermissionStatus.isGranted) {
+           print("🔐 Android için 'Her Zaman' arka plan izni isteniyor...");
+           await perm_handler.Permission.locationAlways.request();
+        }
     }
-    print('✅ Konum izni onaylandı');
-    NotiService()
-        .showNotification(title: "Konum İzni", body: "Konum izni onaylandı");
+    
+    // Her iki platform için de son kontrol
+    LocationPermission finalStatus = await Geolocator.checkPermission();
+    if (finalStatus == LocationPermission.deniedForever) {
+      await _showLocationDialog('Konum izni kalıcı olarak reddedildi. Lütfen uygulama ayarlarından manuel olarak izin verin.');
+      await Geolocator.openAppSettings();
+      return false;
+    }
+
+    if (finalStatus != LocationPermission.always && finalStatus != LocationPermission.whileInUse) {
+        return false;
+    }
+
+     // iOS için 'always' şartını, Android için en azından 'whileInUse' şartını kontrol et
+    if (Platform.isIOS && finalStatus != LocationPermission.always) return false;
+    if (Platform.isAndroid && (finalStatus != LocationPermission.whileInUse && finalStatus != LocationPermission.always)) return false;
+
+    print('✅ Gerekli konum izinleri mevcut.');
     return true;
   }
 
@@ -339,19 +427,53 @@ ${link.isNotEmpty ? '└─ Link: $link' : ''}''');
     );
   }
 
-  Future<void> _showLocationDialog(String message) async {
+  Future<void> _showLocationDialog(String message, {bool showSettingsButton = false, bool isGpsError = false}) async {
+    if (!mounted) return;
+    
+    List<Widget> actions = [];
+
+    if (isGpsError) {
+      actions.add(
+        TextButton(
+          child: const Text('Konum Ayarları\'na Git'),
+          onPressed: () async {
+            Navigator.of(context).pop();
+            await Geolocator.openLocationSettings(); // Cihazın genel konum ayarlarını açar
+          },
+        ),
+      );
+    }
+    
+    if (showSettingsButton) {
+      actions.add(
+        TextButton(
+          child: const Text('Uygulama Ayarları\'na Git'),
+          onPressed: () async {
+            Navigator.of(context).pop();
+            _isResumingFromSettings = true; // Ayarlara gitmeden önce bayrağı true yap
+            await Geolocator.openAppSettings(); // Uygulamanın kendi ayarlarına gider
+          },
+        ),
+      );
+    }
+    
+    // Her zaman bir "Tamam" veya "Kapat" butonu olsun
+    if (actions.isEmpty) {
+        actions.add(
+             TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Tamam'),
+            ),
+        );
+    }
+
     await showDialog(
       context: context,
       barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: const Text('Uyarı'),
         content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => SystemNavigator.pop(),
-            child: const Text('Tamam'),
-          ),
-        ],
+        actions: actions,
       ),
     );
   }

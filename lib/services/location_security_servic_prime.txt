@@ -1,0 +1,138 @@
+import 'dart:async';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+// GÜVENİLİR VE AYRI PAKETLERİ İMPORT EDİYORUZ
+import 'package:flutter_jailbreak_detection/flutter_jailbreak_detection.dart';
+import 'package:device_info_plus/device_info_plus.dart';
+import 'package:sensors_plus/sensors_plus.dart';
+
+// YENİ OLUŞTURDUĞUMUZ VE AYRI BİR DOSYADA DURAN AĞ GÜVENLİK SERVİSİNİ İMPORT EDİYORUZ
+import 'package:mobilperosnel/services/network_security_service.dart';
+
+class LocationSecurityService {
+  
+  /// Konumun güvenilir olup olmadığını 4 katmanlı bir sistemle kontrol eder.
+  /// `true` -> Güvenilir, `false` -> Şüpheli
+  static Future<bool> isLocationTrustworthy(Position currentPosition) {
+    if (Platform.isIOS) {
+      return _isIosLocationTrustworthy(currentPosition);
+    }
+    return Future.value(true); 
+  }
+
+  /// Sadece iOS için profesyonel sahte konum kontrollerini yapar.
+  static Future<bool> _isIosLocationTrustworthy(Position currentPosition) async {
+    
+    // --- KATMAN 1: CİHAZ BÜTÜNLÜĞÜ KONTROLÜ ---
+    try {
+      if (await FlutterJailbreakDetection.jailbroken) {
+        debugPrint("🚨 GÜVENLİK İHLALİ: Cihaz Jailbreak'li!");
+        return false;
+      }
+      
+      DeviceInfoPlugin deviceInfo = DeviceInfoPlugin();
+      IosDeviceInfo iosInfo = await deviceInfo.iosInfo;
+      if (!iosInfo.isPhysicalDevice) {
+        debugPrint("🚨 GÜVENLİK İHLALİ: Uygulama bir Simülatör'de çalışıyor!");
+        // Not: Canlıya çıkarken bu satırın aktif olması önemlidir.
+        // Test aşamasında, simülatörde çalışabilmek için bu satırı yoruma alabilirsiniz.
+        // return false; 
+      }
+    } catch (e) {
+      debugPrint("Cihaz bütünlüğü kontrolü sırasında hata: $e");
+      return false;
+    }
+
+    // --- YENİ EKLENEN KATMAN 2: AĞ VERİSİ VE IP ANALİZİ ---
+    // Ayrı dosyada duran NetworkSecurityService'i burada çağırıyoruz.
+    if (!await NetworkSecurityService.isNetworkLocationConsistent(currentPosition)) {
+      debugPrint("🚨 AĞ İHLALİ: GPS ve IP konumları arasında tutarsızlık tespit edildi!");
+      return false; // Konumlar tutarsızsa, güvenme ve diğer kontrollere geçme.
+    }
+
+    // --- KATMAN 3: SENSÖR VERİSİ ANALİZİ ---
+    if (currentPosition.speed > 1) { 
+      final isDeviceActuallyMoving = await _isDeviceActuallyMoving();
+      if (!isDeviceActuallyMoving) {
+        debugPrint("🚨 SENSÖR TUTARSIZLIĞI: Konum hareketli ama cihaz sensörleri durgun!");
+        return false;
+      }
+    }
+
+    // --- KATMAN 4: DAVRANIŞSAL ANALİZ (AKILLI HIZ KONTROLÜ) ---
+    final prefs = await SharedPreferences.getInstance();
+    return _isSpeedReasonable(prefs, currentPosition);
+  }
+
+  /// Hız kontrolü mantığını içeren yardımcı fonksiyon.
+  static Future<bool> _isSpeedReasonable(SharedPreferences prefs, Position currentPosition) async {
+    final double? lastLat = prefs.getDouble('secure_loc_last_lat');
+    final double? lastLng = prefs.getDouble('secure_loc_last_lng');
+    final int? lastTimeMillis = prefs.getInt('secure_loc_last_time');
+
+    if (lastLat == null || lastLng == null || lastTimeMillis == null ||
+        DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(lastTimeMillis)).inMinutes > 5) {
+      await _saveLastPosition(prefs, currentPosition);
+      debugPrint("🕵️‍♂️ [Hız Kontrolü] Yeni referans noktası ayarlandı.");
+      return true;
+    }
+    
+    final DateTime lastPositionTime = DateTime.fromMillisecondsSinceEpoch(lastTimeMillis);
+    final double distance = Geolocator.distanceBetween(lastLat, lastLng, currentPosition.latitude, currentPosition.longitude);
+    final double timeDiffInSeconds = DateTime.now().difference(lastPositionTime).inMilliseconds / 1000.0;
+    
+    if (timeDiffInSeconds < 1) {
+       await _saveLastPosition(prefs, currentPosition);
+       return true;
+    }
+    
+    final double speed = distance / timeDiffInSeconds;
+    const double maxReasonableSpeedMs = 140; 
+
+    if (speed > maxReasonableSpeedMs) {
+      debugPrint("🚨 HIZ İHLALİ: Anormal hız tespit edildi ($speed m/s).");
+      return false;
+    }
+
+    await _saveLastPosition(prefs, currentPosition);
+    return true;
+  }
+  
+  /// Cihazın ivmeölçerini dinleyerek gerçekten hareket edip etmediğini kontrol eder.
+  static Future<bool> _isDeviceActuallyMoving() async {
+    final completer = Completer<bool>();
+    late StreamSubscription subscription;
+    const double movementThreshold = 0.5;
+    
+    subscription = accelerometerEventStream().listen((AccelerometerEvent event) {
+        double netAcceleration = (event.x.abs() + event.y.abs() + event.z.abs()) - 9.8;
+        if (netAcceleration.abs() > movementThreshold) {
+            if (!completer.isCompleted) {
+              debugPrint("✅ SENSÖR: Cihazda fiziksel hareket tespit edildi.");
+              completer.complete(true);
+              subscription.cancel();
+            }
+        }
+    });
+
+    Future.delayed(const Duration(milliseconds: 1500), () {
+      if (!completer.isCompleted) {
+        debugPrint("⚠️ SENSÖR: Belirlenen sürede yeterli fiziksel hareket tespit edilemedi.");
+        completer.complete(false);
+        subscription.cancel();
+      }
+    });
+
+    return completer.future;
+  }
+
+  /// Konum ve zamanı SharedPreferences'a kaydeder.
+  static Future<void> _saveLastPosition(SharedPreferences prefs, Position position) async {
+    await prefs.setDouble('secure_loc_last_lat', position.latitude);
+    await prefs.setDouble('secure_loc_last_lng', position.longitude);
+    await prefs.setInt('secure_loc_last_time', DateTime.now().millisecondsSinceEpoch);
+  }
+}

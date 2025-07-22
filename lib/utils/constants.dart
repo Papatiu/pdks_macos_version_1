@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 class Constants {
-  static const String baseUrl = "http://192.168.1.102:8080/api";
+  static const String baseUrl = "http://172.16.10.104:8080/api";
   static const String tokenKey = "auth_token";
 
   static const Color primaryColor = Colors.blue;
